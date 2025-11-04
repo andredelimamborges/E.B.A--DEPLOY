@@ -245,15 +245,63 @@ Responda em JSON:
 }"""
 
 # ========= Helpers I/O =========
-def extract_pdf_text_bytes(uploaded_file) -> str:
+@st.cache_resource(show_spinner=False)
+def get_llm_client_cached(provider: str, api_key: str):
+    """Cria cliente LLM compatível com múltiplas versões, SEM PROXIES."""
+    if not api_key:
+        raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
+    
+    # Remover qualquer variável de ambiente de proxy que possa interferir
+    import os
+    for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'GROQ_PROXY']:
+        os.environ.pop(proxy_var, None)
+    
+    pv = (provider or "Groq").lower()
+    
     try:
-        # Cria um arquivo em memória
-        from io import BytesIO
-        pdf_file = BytesIO(uploaded_file.getvalue())
-        text = extract_text(pdf_file)
-        return text
+        if pv == "groq":
+            if Groq is None:
+                raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
+            
+            # Método mais direto e seguro
+            client = Groq(api_key=api_key)
+            return client
+
+        elif pv == "openai":
+            if OpenAI is None:
+                raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
+            
+            client = OpenAI(api_key=api_key)
+            return client
+            
+        else:
+            raise RuntimeError(f"Provedor não suportado: {provider}")
+            
+    except Exception as e:
+        raise RuntimeError(f"[Erro cliente] {e}")
+    
+def extract_pdf_text_bytes(file) -> str:
+    try:
+        return extract_text(file)
     except Exception as e:
         return f"[ERRO_EXTRACAO_PDF] {e}"
+
+def load_all_training_texts() -> str:
+    texts = []
+    for fname in sorted(os.listdir(TRAINING_DIR)):
+        path = os.path.join(TRAINING_DIR, fname)
+        try:
+            if fname.lower().endswith(".pdf"):
+                with open(path, "rb") as f:
+                    txt = extract_text(f)
+            else:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+            texts.append(f"--- {fname} ---\n{txt[:2000]}\n")
+        except Exception:
+            continue
+    return "\n".join(texts)
+
 def gerar_perfil_cargo_dinamico(cargo: str) -> Dict:
     return {
         "traits_ideais": {"Abertura": (5,8), "Conscienciosidade": (6,9), "Extroversão": (4,8), "Amabilidade": (5,8), "Neuroticismo": (0,5)},
