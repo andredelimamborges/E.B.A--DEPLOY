@@ -243,17 +243,37 @@ Responda em JSON:
 # ========= Helpers I/O =========
 @st.cache_resource(show_spinner=False)
 def get_llm_client_cached(provider: str, api_key: str):
+    """Cria cliente LLM compatível com múltiplas versões de SDK, sem proxies."""
     if not api_key:
         raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
     pv = (provider or "Groq").lower()
-    if pv == "groq":
-        if Groq is None: raise RuntimeError("Instale: pip install groq")
-        return Groq(api_key=api_key)
-    if pv == "openai":
-        if OpenAI is None: raise RuntimeError("Instale: pip install openai>=1.0.0")
-        return OpenAI(api_key=api_key)
-    raise RuntimeError(f"Provedor não suportado: {provider}")
+    try:
+        if pv == "groq":
+            if Groq is None:
+                raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
+            try:
+                return Groq(api_key=api_key)
+            except TypeError:
+                # fallback para versões antigas que não aceitam parâmetros
+                client = Groq()
+                client.api_key = api_key
+                return client
 
+        elif pv == "openai":
+            if OpenAI is None:
+                raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
+            try:
+                return OpenAI(api_key=api_key)
+            except TypeError:
+                client = OpenAI()
+                client.api_key = api_key
+                return client
+
+        else:
+            raise RuntimeError(f"Provedor não suportado: {provider}")
+    except Exception as e:
+        raise RuntimeError(f"[Erro cliente] {e}")
+    
 def extract_pdf_text_bytes(file) -> str:
     try:
         return extract_text(file)
