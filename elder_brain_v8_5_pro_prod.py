@@ -243,36 +243,50 @@ Responda em JSON:
 # ========= Helpers I/O =========
 @st.cache_resource(show_spinner=False)
 def get_llm_client_cached(provider: str, api_key: str):
-    """Cria cliente LLM compatível com múltiplas versões de SDK, sem proxies."""
+    """Cria cliente LLM compatível com todas as versões, ignorando proxies."""
     if not api_key:
         raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
     pv = (provider or "Groq").lower()
+
     try:
         if pv == "groq":
             if Groq is None:
                 raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
             try:
+                # ⚙️ tentativa normal
                 return Groq(api_key=api_key)
-            except TypeError:
-                # fallback para versões antigas que não aceitam parâmetros
-                client = Groq()
-                client.api_key = api_key
-                return client
+            except Exception as e:
+                # 🔁 fallback manual para versões que rejeitam proxies
+                try:
+                    import groq
+                    client = groq.Groq()
+                    # força key manualmente
+                    if hasattr(client, "api_key"):
+                        client.api_key = api_key
+                    elif hasattr(client, "configuration"):
+                        client.configuration.api_key = api_key
+                    return client
+                except Exception as inner:
+                    raise RuntimeError(f"Falha ao inicializar cliente Groq (fallback): {inner}") from None
 
         elif pv == "openai":
             if OpenAI is None:
                 raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
             try:
                 return OpenAI(api_key=api_key)
-            except TypeError:
-                client = OpenAI()
-                client.api_key = api_key
+            except Exception as e:
+                # fallback manual
+                import openai
+                client = openai.OpenAI()
+                if hasattr(client, "api_key"):
+                    client.api_key = api_key
                 return client
-
         else:
             raise RuntimeError(f"Provedor não suportado: {provider}")
+
     except Exception as e:
-        raise RuntimeError(f"[Erro cliente] {e}")
+        # mensagem uniforme de erro
+        raise RuntimeError(f"[Erro cliente] {str(e)}")
     
 def extract_pdf_text_bytes(file) -> str:
     try:
