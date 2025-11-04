@@ -1,0 +1,10 @@
+streamlit==1.39.0
+groq==0.8.0
+openai==1.47.0
+pdfminer.six==20231228
+fpdf==1.7.2
+plotly==5.24.1
+pandas==2.2.3
+numpy==2.1.2
+kaleido==0.2.1
+requests==2.32.3
