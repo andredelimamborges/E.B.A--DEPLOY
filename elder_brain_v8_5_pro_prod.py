@@ -165,42 +165,45 @@ def _estimate_tokens(text: str) -> int:
 # ======== Cliente seguro (conserta erro de proxies) ========
 @st.cache_resource(show_spinner=False)
 def get_llm_client_cached(provider: str, api_key: str):
-    """Cria cliente LLM compatível com múltiplas versões, SEM proxies."""
+    """Cria cliente LLM seguro e compatível, evitando o bug de proxies no Streamlit Cloud."""
     if not api_key:
         raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
     pv = (provider or "Groq").lower()
-    try:
-        if pv == "groq":
-            if Groq is None:
-                raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
-            try:
-                # tentativa padrão
-                return Groq(api_key=api_key)
-            except Exception:
-                # fallback: ignora proxies e injeta api_key manualmente
-                import groq
-                client = groq.Groq()
-                if hasattr(client, "api_key"):
-                    client.api_key = api_key
-                elif hasattr(client, "configuration"):
-                    client.configuration.api_key = api_key
-                return client
 
-        elif pv == "openai":
-            if OpenAI is None:
-                raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
-            try:
-                return OpenAI(api_key=api_key)
-            except Exception:
-                import openai
-                client = openai.OpenAI()
-                if hasattr(client, "api_key"):
-                    client.api_key = api_key
-                return client
-        else:
-            raise RuntimeError(f"Provedor não suportado: {provider}")
-    except Exception as e:
-        raise RuntimeError(f"[Erro cliente] {e}")
+    # ---- implementação robusta ----
+    if pv == "groq":
+        try:
+            import groq
+            # cria sem parâmetros (evita proxies)
+            client = groq.Groq()
+            # força a api_key manualmente
+            if hasattr(client, "api_key"):
+                client.api_key = api_key
+            elif hasattr(client, "configuration"):
+                client.configuration.api_key = api_key
+            # garante que session default usa a key
+            if hasattr(groq, "api_key"):
+                groq.api_key = api_key
+            os.environ["GROQ_API_KEY"] = api_key
+            return client
+        except Exception as e:
+            raise RuntimeError(f"[Erro cliente] Groq SDK falhou ({e})")
+
+    elif pv == "openai":
+        try:
+            import openai
+            openai.api_key = api_key
+            if OpenAI is not None:
+                try:
+                    return OpenAI(api_key=api_key)
+                except Exception:
+                    return openai.OpenAI()
+            return openai
+        except Exception as e:
+            raise RuntimeError(f"[Erro cliente] OpenAI SDK falhou ({e})")
+
+    else:
+        raise RuntimeError(f"Provedor não suportado: {provider}")
 
 # ======== Prompts =========
 EXTRACTION_PROMPT = """Você é um especialista em análise de relatórios BFA (Big Five Analysis) para seleção de talentos.
@@ -274,9 +277,10 @@ def extract_pdf_text_bytes(file) -> str:
         return f"[ERRO_EXTRACAO_PDF] {e}"
 
 def load_all_training_texts() -> str:
+    """Carrega todos os PDFs e TXTs da pasta training_data e junta em um contexto."""
     texts = []
-    for fname in sorted(os.listdir(TRAINING_DIR)):
-        path = os.path.join(TRAINING_DIR, fname)
+    for fname in sorted(os.listdir("training_data")):
+        path = os.path.join("training_data", fname)
         try:
             if fname.lower().endswith(".pdf"):
                 with open(path, "rb") as f:
