@@ -157,10 +157,12 @@ def main():
     st.set_page_config(page_title="EBA — PROD",page_icon="🧠",layout="wide")
     st.markdown(DARK_CSS,unsafe_allow_html=True)
     st.title("🧠 Elder Brain Analytics — Versão PROD")
+
     ss=st.session_state
     ss.setdefault("tracker",TokenTracker())
+    ss.setdefault("admin_mode", False)  # 🔹 inicia sempre como usuário comum
 
-    # --- Login Admin ---
+    # --- Sidebar ---
     with st.sidebar:
         st.header("⚙️ Configuração")
         provider=st.radio("Provedor",["Groq","OpenAI"])
@@ -169,9 +171,14 @@ def main():
         st.markdown("---")
         st.subheader("🔒 Painel Administrativo")
         admin_pwd=st.text_input("Senha do Admin",type="password")
-        if admin_pwd==st.secrets.get("ADMIN_PASSWORD",""):
-            ss["admin_mode"]=True;st.success("Modo Admin Ativo")
-        else:ss["admin_mode"]=False
+        if admin_pwd and admin_pwd==st.secrets.get("ADMIN_PASSWORD",""):
+            ss["admin_mode"]=True
+            st.success("Modo Admin Ativo")
+        elif admin_pwd:
+            st.error("Senha incorreta")
+            ss["admin_mode"]=False
+        else:
+            ss["admin_mode"]=False  # 🔹 garante modo usuário comum se nada digitado
 
     # --- Upload PDF ---
     st.subheader("📄 Upload de Relatório BFA")
