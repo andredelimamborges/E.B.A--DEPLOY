@@ -20,6 +20,7 @@ import plotly.graph_objects as go
 from fpdf import FPDF
 from pdfminer.high_level import extract_text
 import streamlit as st
+import httpx
 
 # ======== LLM Clients ========
 try:
@@ -173,38 +174,41 @@ def get_llm_client_cached(provider: str, api_key: str):
     # ---- implementação robusta ----
     if pv == "groq":
         try:
-            import groq
-            # cria sem parâmetros (evita proxies)
-            client = groq.Groq()
-            # força a api_key manualmente
-            if hasattr(client, "api_key"):
-                client.api_key = api_key
-            elif hasattr(client, "configuration"):
-                client.configuration.api_key = api_key
-            # garante que session default usa a key
-            if hasattr(groq, "api_key"):
-                groq.api_key = api_key
-            os.environ["GROQ_API_KEY"] = api_key
+            from groq import Groq
+            # Cria com api_key e http_client sem proxies
+            client = Groq(
+                api_key=api_key,
+                http_client=httpx.Client(proxies=None)
+            )
+            # Garante que o ambiente não interfira
+            os.environ.pop("HTTP_PROXY", None)
+            os.environ.pop("HTTPS_PROXY", None)
+            os.environ.pop("http_proxy", None)
+            os.environ.pop("https_proxy", None)
             return client
         except Exception as e:
             raise RuntimeError(f"[Erro cliente] Groq SDK falhou ({e})")
 
     elif pv == "openai":
         try:
-            import openai
-            openai.api_key = api_key
-            if OpenAI is not None:
-                try:
-                    return OpenAI(api_key=api_key)
-                except Exception:
-                    return openai.OpenAI()
-            return openai
+            from openai import OpenAI
+            # Cria com api_key e http_client sem proxies
+            client = OpenAI(
+                api_key=api_key,
+                http_client=httpx.Client(proxies=None)
+            )
+            # Garante que o ambiente não interfira
+            os.environ.pop("HTTP_PROXY", None)
+            os.environ.pop("HTTPS_PROXY", None)
+            os.environ.pop("http_proxy", None)
+            os.environ.pop("https_proxy", None)
+            return client
         except Exception as e:
             raise RuntimeError(f"[Erro cliente] OpenAI SDK falhou ({e})")
 
     else:
         raise RuntimeError(f"Provedor não suportado: {provider}")
-
+    
 # ======== Prompts =========
 EXTRACTION_PROMPT = """Você é um especialista em análise de relatórios BFA (Big Five Analysis) para seleção de talentos.
 Sua tarefa: extrair dados do relatório abaixo e retornar APENAS um JSON válido, sem texto adicional.
