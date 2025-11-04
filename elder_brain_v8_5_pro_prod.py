@@ -18,10 +18,11 @@ import plotly.graph_objects as go
 from fpdf import FPDF
 from pdfminer.high_level import extract_text
 import streamlit as st
+import os
 
-for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']:
+# Remove variáveis de ambiente de proxy que podem causar conflitos
+for proxy_var in ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy', 'GROQ_PROXY']:
     os.environ.pop(proxy_var, None)
-    
 # ========= LLM Clients =========
 try:
     from groq import Groq
@@ -246,42 +247,24 @@ Responda em JSON:
 # ========= Helpers I/O =========
 @st.cache_resource(show_spinner=False)
 def get_llm_client_cached(provider: str, api_key: str):
-    """Cria cliente LLM compatível com múltiplas versões, sem proxies."""
+    """Cria cliente LLM de forma simples e direta."""
     if not api_key:
         raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
+    
     pv = (provider or "Groq").lower()
-    try:
-        if pv == "groq":
-            if Groq is None:
-                raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
-            try:
-                # tentativa padrão
-                return Groq(api_key=api_key)
-            except Exception:
-                # fallback para versões que rejeitam proxies
-                import groq
-                client = groq.Groq()
-                if hasattr(client, "api_key"):
-                    client.api_key = api_key
-                elif hasattr(client, "configuration"):
-                    client.configuration.api_key = api_key
-                return client
-
-        elif pv == "openai":
-            if OpenAI is None:
-                raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
-            try:
-                return OpenAI(api_key=api_key)
-            except Exception:
-                import openai
-                client = openai.OpenAI()
-                if hasattr(client, "api_key"):
-                    client.api_key = api_key
-                return client
-        else:
-            raise RuntimeError(f"Provedor não suportado: {provider}")
-    except Exception as e:
-        raise RuntimeError(f"[Erro cliente] {e}")
+    
+    if pv == "groq":
+        if Groq is None:
+            raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
+        return Groq(api_key=api_key)
+    
+    elif pv == "openai":
+        if OpenAI is None:
+            raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
+        return OpenAI(api_key=api_key)
+    
+    else:
+        raise RuntimeError(f"Provedor não suportado: {provider}")
     
 def extract_pdf_text_bytes(file) -> str:
     try:
