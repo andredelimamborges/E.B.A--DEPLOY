@@ -245,45 +245,15 @@ Responda em JSON:
 }"""
 
 # ========= Helpers I/O =========
-@st.cache_resource(show_spinner=False)
-def get_llm_client_cached(provider: str, api_key: str):
-    """Cria cliente LLM compatível com múltiplas versões, sem proxies."""
-    if not api_key:
-        raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
-    pv = (provider or "Groq").lower()
+def extract_pdf_text_bytes(uploaded_file) -> str:
     try:
-        if pv == "groq":
-            if Groq is None:
-                raise RuntimeError("Biblioteca 'groq' não instalada. Execute: pip install groq")
-            try:
-                # tentativa padrão
-                return Groq(api_key=api_key)
-            except Exception:
-                # fallback para versões que rejeitam proxies
-                import groq
-                client = groq.Groq()
-                if hasattr(client, "api_key"):
-                    client.api_key = api_key
-                elif hasattr(client, "configuration"):
-                    client.configuration.api_key = api_key
-                return client
-
-        elif pv == "openai":
-            if OpenAI is None:
-                raise RuntimeError("Biblioteca 'openai' não instalada. Execute: pip install openai>=1.0.0")
-            try:
-                return OpenAI(api_key=api_key)
-            except Exception:
-                import openai
-                client = openai.OpenAI()
-                if hasattr(client, "api_key"):
-                    client.api_key = api_key
-                return client
-        else:
-            raise RuntimeError(f"Provedor não suportado: {provider}")
+        # Cria um arquivo em memória
+        from io import BytesIO
+        pdf_file = BytesIO(uploaded_file.getvalue())
+        text = extract_text(pdf_file)
+        return text
     except Exception as e:
-        raise RuntimeError(f"[Erro cliente] {e}")
-    
+        return f"[ERRO_EXTRACAO_PDF] {e}"
 def gerar_perfil_cargo_dinamico(cargo: str) -> Dict:
     return {
         "traits_ideais": {"Abertura": (5,8), "Conscienciosidade": (6,9), "Extroversão": (4,8), "Amabilidade": (5,8), "Neuroticismo": (0,5)},
