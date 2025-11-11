@@ -1,12 +1,15 @@
-# elder_brain_v8_5_pro_prod_full.py
+# elder_brain_analytics_v9_1_corporate_refined.py
 """
-Elder Brain Analytics — PRO (Full) • PROD
-- TODAS as funcionalidades: Extração → Análise → Gráficos → PDF Deluxe → Chat → Treinamento
-- API keys lidas via st.secrets (não aparecem para o usuário)
-- Painel Administrativo protegido por senha (ADMIN_PASSWORD)
-- Custos e tokens visíveis somente ao Admin
-- Compatível com groq==0.8.0 (corrige erro de proxies)
-Autor: André de Lima
+Elder Brain Analytics — v9.1 Corporate Refined
+- Dark theme roxo (paleta: #1e202c, #60519b, #31323e, #bfc0d1)
+- Sem gamificação/XP; foco corporativo
+- Temperatura removida (interno: 0.3)
+- max_tokens fixo = 4096
+- PDF com gráficos coloridos
+- Token Logger + custo estimado com pricing GPT:
+    INPUT  = $0.005 / 1K tokens
+    OUTPUT = $0.015 / 1K tokens
+- Suporte Groq e OpenAI
 """
 
 import os, io, re, json, time, tempfile
@@ -15,25 +18,22 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
-import numpy as np
 import plotly.graph_objects as go
 from fpdf import FPDF
 from pdfminer.high_level import extract_text
 import streamlit as st
-import httpx
 
 # ======== LLM Clients ========
 try:
     from groq import Groq
 except Exception:
     Groq = None
-
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
 
-# ======== Token helpers (estimativa caso SDK não retorne usage) ========
+# ======== Token tools (opcional p/ fallback de contagem) ========
 try:
     import tiktoken
 except Exception:
@@ -50,36 +50,54 @@ MODELOS_SUGERIDOS_GROQ = [
     "llama-3.1-70b-versatile",
     "mixtral-8x7b-32768",
     "gemma2-9b-it",
-    "llama-3.2-1b-preview",
-    "llama-3.2-3b-preview",
 ]
 MODELOS_SUGERIDOS_OPENAI = ["gpt-4o-mini", "gpt-4o"]
 
+# Tokens e custo
 MAX_TOKENS_FIXED = 4096
 TEMP_FIXED = 0.3
-# preços de referência (apenas para estimativa)
-GPT_PRICE_INPUT_PER_1K = 0.005
-GPT_PRICE_OUTPUT_PER_1K = 0.015
+GPT_PRICE_INPUT_PER_1K = 0.005   # USD
+GPT_PRICE_OUTPUT_PER_1K = 0.015  # USD
 
-# ======== Tema / CSS ========
+# =========================
+#       THEME & CSS
+# =========================
 DARK_CSS = """
 <style>
 :root{
   --bg:#20152b; --panel:#2a1f39; --panel-2:#332447; --accent:#9b6bff;
-  --text:#EAE6F5; --muted:#B9A8D9; --success:#2ECC71; --warn:#F39C12; --danger:#E74C3C;
+  --accent-2:#d68eff; --text:#EAE6F5; --muted:#B9A8D9; --success:#2ECC71; --warn:#F39C12; --danger:#E74C3C;
 }
 html, body, .stApp { background: var(--bg); color: var(--text) !important; }
 section[data-testid="stSidebar"] { background: #1b1c25; border-right: 1px solid #3b3d4b; }
-header[data-testid="stHeader"] { display:none !important; }
-.kpi-card{background:var(--panel); border:1px solid #3f4151; border-radius:14px; padding:14px; box-shadow:0 8px 24px rgba(0,0,0,.22)}
+.block-container {
+  padding-top: 0rem !important;
+  margin-top: 0rem !important;
+}
+header[data-testid="stHeader"] {
+  display: none !important;
+}
+
+h1,h2,h3,h4{ color: var(--text); }
+.stButton>button, .stDownloadButton>button{
+  background: linear-gradient(135deg, var(--accent), #7c69d4);
+  color: white; border: 0; padding: .55rem 1rem; border-radius: 12px; font-weight: 700;
+  box-shadow: 0 10px 22px rgba(96,81,155,.25);
+}
+.stButton>button:hover, .stDownloadButton>button:hover{ filter: brightness(1.06); }
+.kpi-card{
+  background: var(--panel); border:1px solid #3f4151; border-radius:14px; padding:14px; box-shadow:0 8px 24px rgba(0,0,0,.22);
+}
 .small{color:var(--muted);font-size:.9rem}
+.hr{height:1px;background:#3f4151;border:0;margin:14px 0}
 .badge{display:inline-block;background:#2a2b36;color:var(--muted);padding:.25rem .55rem;border-radius:999px;border:1px solid #3f4151;margin-right:.35rem}
-.stButton>button,.stDownloadButton>button{background:linear-gradient(135deg,var(--accent),#7c69d4); color:white; border:0; padding:.55rem 1rem; border-radius:12px; font-weight:700; box-shadow:0 10px 22px rgba(96,81,155,.25)}
-.stButton>button:hover,.stDownloadButton>button:hover{filter:brightness(1.06)}
+.table {background:var(--panel); border:1px solid #3f4151; border-radius:12px; padding:10px}
 </style>
 """
 
-# ======== Fontes (Montserrat opcional no PDF) ========
+# =========================
+#   Fontes (Montserrat)
+# =========================
 def _download_font(dst: str, url: str) -> bool:
     try:
         import requests
@@ -115,7 +133,9 @@ def _register_montserrat(pdf: FPDF) -> bool:
     except Exception:
         return False
 
-# ======== Token Accounting ========
+# =========================
+#     Token Accounting
+# =========================
 @dataclass
 class TokenStep:
     prompt: int = 0
@@ -129,7 +149,7 @@ class TokenTracker:
         "extracao": TokenStep(),
         "analise": TokenStep(),
         "chat": TokenStep(),
-        "pdf": TokenStep()  # lógico, sem custo
+        "pdf": TokenStep()  # lógico (não usa LLM); pode registrar custo 0
     })
     model: str = ""
     provider: str = ""
@@ -151,6 +171,7 @@ class TokenTracker:
     def total_tokens(self): return self.total_prompt + self.total_completion
 
     def cost_usd_gpt(self) -> float:
+        # custo = input_tokens * 0.005/1K + output_tokens * 0.015/1K
         return (self.total_prompt/1000.0)*GPT_PRICE_INPUT_PER_1K + (self.total_completion/1000.0)*GPT_PRICE_OUTPUT_PER_1K
 
 def _estimate_tokens(text: str) -> int:
@@ -163,117 +184,107 @@ def _estimate_tokens(text: str) -> int:
         pass
     return max(1, int(len(text) / 4))  # heurística
 
-# ======== Cliente seguro (conserta erro de proxies) ========
-@st.cache_resource(show_spinner=False)
-def get_llm_client_cached(provider: str, api_key: str):
-    """Cria cliente LLM seguro e compatível, evitando o bug de proxies no Streamlit Cloud."""
-    if not api_key:
-        raise RuntimeError("Chave da API não configurada. Defina nos Secrets do Streamlit.")
-    pv = (provider or "Groq").lower()
-
-    # ---- implementação robusta ----
-    if pv == "groq":
-        try:
-            from groq import Groq
-            # Cria com api_key e http_client sem proxies
-            client = Groq(
-                api_key=api_key,
-                http_client=httpx.Client(proxies=None)
-            )
-            # Garante que o ambiente não interfira
-            os.environ.pop("HTTP_PROXY", None)
-            os.environ.pop("HTTPS_PROXY", None)
-            os.environ.pop("http_proxy", None)
-            os.environ.pop("https_proxy", None)
-            return client
-        except Exception as e:
-            raise RuntimeError(f"[Erro cliente] Groq SDK falhou ({e})")
-
-    elif pv == "openai":
-        try:
-            from openai import OpenAI
-            # Cria com api_key e http_client sem proxies
-            client = OpenAI(
-                api_key=api_key,
-                http_client=httpx.Client(proxies=None)
-            )
-            # Garante que o ambiente não interfira
-            os.environ.pop("HTTP_PROXY", None)
-            os.environ.pop("HTTPS_PROXY", None)
-            os.environ.pop("http_proxy", None)
-            os.environ.pop("https_proxy", None)
-            return client
-        except Exception as e:
-            raise RuntimeError(f"[Erro cliente] OpenAI SDK falhou ({e})")
-
-    else:
-        raise RuntimeError(f"Provedor não suportado: {provider}")
-    
-# ======== Prompts =========
+# =========================
+#        Prompts
+# =========================
 EXTRACTION_PROMPT = """Você é um especialista em análise de relatórios BFA (Big Five Analysis) para seleção de talentos.
+
 Sua tarefa: extrair dados do relatório abaixo e retornar APENAS um JSON válido, sem texto adicional.
 
 ESTRUTURA OBRIGATÓRIA:
-{
-  "candidato": {"nome": "string ou null","cargo_avaliado": "string ou null"},
-  "traits_bfa": {
+{{
+  "candidato": {{
+    "nome": "string ou null",
+    "cargo_avaliado": "string ou null"
+  }},
+  "traits_bfa": {{
     "Abertura": número 0-10 ou null,
     "Conscienciosidade": número 0-10 ou null,
     "Extroversao": número 0-10 ou null,
     "Amabilidade": número 0-10 ou null,
     "Neuroticismo": número 0-10 ou null
-  },
-  "competencias_ms": [{"nome": "string","nota": número,"classificacao": "string"}],
-  "facetas_relevantes": [{"nome": "string","percentil": número,"interpretacao": "string resumida"}],
-  "indicadores_saude_emocional": {"ansiedade": 0-100 ou null,"irritabilidade": 0-100 ou null,"estado_animo": 0-100 ou null,"impulsividade": 0-100 ou null},
+  }},
+  "competencias_ms": [
+    {{"nome": "string", "nota": número, "classificacao": "string"}}
+  ],
+  "facetas_relevantes": [
+    {{"nome": "string", "percentil": número, "interpretacao": "string resumida"}}
+  ],
+  "indicadores_saude_emocional": {{
+    "ansiedade": número 0-100 ou null,
+    "irritabilidade": número 0-100 ou null,
+    "estado_animo": número 0-100 ou null,
+    "impulsividade": número 0-100 ou null
+  }},
   "potencial_lideranca": "BAIXO" | "MÉDIO" | "ALTO" ou null,
-  "integridade_fgi": 0-100 ou null,
-  "resumo_qualitativo": "texto original do relatório",
-  "pontos_fortes": ["3-5 itens"],
-  "pontos_atencao": ["2-4 itens"],
-  "fit_geral_cargo": 0-100
-}
+  "integridade_fgi": número 0-100 ou null,
+  "resumo_qualitativo": "texto do resumo presente no relatório",
+  "pontos_fortes": ["lista de 3-5 pontos"],
+  "pontos_atencao": ["lista de 2-4 pontos"],
+  "fit_geral_cargo": número 0-100
+}}
 
 REGRAS:
-1) Normalize percentis para escalas; 2) Big Five: percentil 60 -> 6.0/10; 3) Extraia TODAS as competências;
+1) Normalize percentis; 2) Big Five: percentil 60 -> 6.0/10; 3) Extraia TODAS as competências;
 4) Use null quando não houver evidência; 5) resumo_qualitativo = texto original;
-6) pontos_fortes (3-5) e pontos_atencao (2-4); 7) fit_geral_cargo 0-100 baseado no cargo: {cargo}.
+6) pontos_fortes (3-5) e pontos_atencao (2-4); 7) fit_geral_cargo 0-100 baseado no cargo: {{cargo}}.
 
 RELATÓRIO:
-\"\"\"{text}\"\"\"
+\"\"\"{{text}}\"\"\"
 
 MATERIAIS (opcional):
-\"\"\"{training_context}\"\"\"
+\"\"\"{{training_context}}\"\"\"
 
 Retorne apenas o JSON puro.
 """
 
 ANALYSIS_PROMPT = """Você é um consultor sênior de RH especializado em análise comportamental.
 
-Cargo avaliado: {cargo}
+Cargo avaliado: {{cargo}}
 
 DADOS (JSON extraído):
-{json_data}
+{{json_data}}
 
 PERFIL IDEAL DO CARGO:
-{perfil_cargo}
+{{perfil_cargo}}
 
 Responda em JSON:
-{
+{{
   "compatibilidade_geral": 0-100,
   "decisao": "RECOMENDADO" | "RECOMENDADO COM RESSALVAS" | "NÃO RECOMENDADO",
   "justificativa_decisao": "texto",
-  "analise_tracos": {
-    "Abertura": "texto","Conscienciosidade": "texto","Extroversao": "texto","Amabilidade": "texto","Neuroticismo": "texto"
-  },
-  "competencias_criticas": [{"competencia":"nome","avaliacao":"texto","status":"ATENDE" | "PARCIAL" | "NÃO ATENDE"}],
+  "analise_tracos": {{
+    "Abertura": "texto",
+    "Conscienciosidade": "texto",
+    "Extroversao": "texto",
+    "Amabilidade": "texto",
+    "Neuroticismo": "texto"
+  }},
+  "competencias_criticas": [
+    {{"competencia": "nome", "avaliacao": "texto", "status": "ATENDE" | "PARCIAL" | "NÃO ATENDE"}}
+  ],
   "saude_emocional_contexto": "texto",
   "recomendacoes_desenvolvimento": ["a","b","c"],
-  "cargos_alternativos": [{"cargo":"nome","justificativa":"texto"}],
+  "cargos_alternativos": [{{"cargo":"nome","justificativa":"texto"}}],
   "resumo_executivo": "100-150 palavras"
-}"""
+}}"""
 
-# ======== Helpers I/O ========
+# =========================
+#     Helpers I/O
+# =========================
+@st.cache_resource(show_spinner=False)
+def get_llm_client_cached(provider: str, api_key: str):
+    if not api_key:
+        raise RuntimeError("Informe a API Key.")
+    pv = (provider or "Groq").lower()
+    if pv == "groq":
+        if Groq is None: raise RuntimeError("Instale: pip install groq")
+        return Groq(api_key=api_key)
+    if pv == "openai":
+        if OpenAI is None: raise RuntimeError("Instale: pip install openai>=1.0.0")
+        return OpenAI(api_key=api_key)
+    raise RuntimeError(f"Provedor não suportado: {provider}")
+
 def extract_pdf_text_bytes(file) -> str:
     try:
         return extract_text(file)
@@ -281,10 +292,9 @@ def extract_pdf_text_bytes(file) -> str:
         return f"[ERRO_EXTRACAO_PDF] {e}"
 
 def load_all_training_texts() -> str:
-    """Carrega todos os PDFs e TXTs da pasta training_data e junta em um contexto."""
     texts = []
-    for fname in sorted(os.listdir("training_data")):
-        path = os.path.join("training_data", fname)
+    for fname in sorted(os.listdir(TRAINING_DIR)):
+        path = os.path.join(TRAINING_DIR, fname)
         try:
             if fname.lower().endswith(".pdf"):
                 with open(path, "rb") as f:
@@ -304,13 +314,15 @@ def gerar_perfil_cargo_dinamico(cargo: str) -> Dict:
         "descricao": f"Perfil para {cargo}"
     }
 
-# ======== Chat/Completion wrappers ========
+# =========================
+#  Wrappers de completion (captura usage quando disponível)
+# =========================
 def _chat_completion_json(provider, client, model, messages, force_json=True):
+    """Retorna (content, usage_dict) com max_tokens=4096 e temp=0.3 fixos."""
     usage = None
     if (provider or "").lower() == "groq":
         kwargs = dict(model=model, messages=messages, max_tokens=MAX_TOKENS_FIXED, temperature=TEMP_FIXED)
-        if force_json:
-            kwargs["response_format"] = {"type": "json_object"}
+        if force_json: kwargs["response_format"] = {"type":"json_object"}
         resp = client.chat.completions.create(**kwargs)
         content = resp.choices[0].message.content.strip()
         usage = getattr(resp, "usage", None)
@@ -331,74 +343,67 @@ def _chat_completion_json(provider, client, model, messages, force_json=True):
             usage = {"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens, "total_tokens": usage.total_tokens}
         return content, usage
 
-def _estimate_and_add(tracker, step, messages, content, usage):
+def _add_usage_or_estimate(tracker: TokenTracker, step: str, messages: List[Dict], content: str, usage: Optional[Dict]):
     if usage:
         tracker.add(step, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
         return
     prompt_text = "\n".join([m.get("content","") for m in messages])
     tracker.add(step, _estimate_tokens(prompt_text), _estimate_tokens(content))
 
-# ======== Core IA ========
-def extract_bfa_data(text: str, cargo: str, training_context: str,
-                     provider: str, model_id: str, token: str, tracker: TokenTracker
-                     ) -> Tuple[Optional[Dict], str]:
+# =========================
+#        Core IA
+# =========================
+def extract_bfa_data(text, cargo, training_context, provider, model_id, token, tracker: TokenTracker):
     try:
         client = get_llm_client_cached(provider, token)
     except Exception as e:
         return None, f"[Erro cliente] {e}"
-
     prompt = (EXTRACTION_PROMPT
-              .replace("{text}", text[:10000])
-              .replace("{training_context}", training_context[:3000])
-              .replace("{cargo}", cargo))
-
+              .replace("{{text}}", text[:10000])
+              .replace("{{training_context}}", training_context[:3000])
+              .replace("{{cargo}}", cargo))
     try:
-        content, usage = _chat_completion_json(provider, client, model_id.strip(), [{"role": "user", "content": prompt}], True)
-        _estimate_and_add(tracker, "extracao", [{"role":"user","content":prompt}], content, usage)
-
+        content, usage = _chat_completion_json(provider, client, model_id.strip(), [{"role":"user","content":prompt}], True)
+        _add_usage_or_estimate(tracker, "extracao", [{"role":"user","content":prompt}], content, usage)
         try:
             return json.loads(content), content
         except Exception:
             m = re.search(r'\{(?:[^{}]|(?:\{[^{}]*\}))*\}', content, re.DOTALL)
             if m:
                 return json.loads(m.group(0)), content
-            return None, f"Nenhum JSON válido encontrado: {content[:800]}..."
+            return None, f"Nenhum JSON válido: {content[:800]}..."
     except Exception as e:
         msg = f"[Erro LLM] {e}"
         if hasattr(e, "response") and getattr(e.response, "text", None):
             msg += f" - Resposta: {e.response.text}"
         return None, msg
 
-def analyze_bfa_data(bfa_data: Dict, cargo: str, perfil_cargo: Dict,
-                     provider: str, model_id: str, token: str, tracker: TokenTracker
-                     ) -> Tuple[Optional[Dict], str]:
+def analyze_bfa_data(bfa_data, cargo, perfil_cargo, provider, model_id, token, tracker: TokenTracker):
     try:
         client = get_llm_client_cached(provider, token)
     except Exception as e:
         return None, f"[Erro cliente] {e}"
-
     prompt = (ANALYSIS_PROMPT
-              .replace("{cargo}", cargo)
-              .replace("{json_data}", json.dumps(bfa_data, ensure_ascii=False, indent=2))
-              .replace("{perfil_cargo}", json.dumps(perfil_cargo, ensure_ascii=False, indent=2)))
-
+              .replace("{{cargo}}", cargo)
+              .replace("{{json_data}}", json.dumps(bfa_data, ensure_ascii=False, indent=2))
+              .replace("{{perfil_cargo}}", json.dumps(perfil_cargo, ensure_ascii=False, indent=2)))
     try:
         content, usage = _chat_completion_json(provider, client, model_id.strip(),
                                                [{"role":"system","content":"Responda estritamente em JSON."},
                                                 {"role":"user","content":prompt}], True)
-        _estimate_and_add(tracker, "analise",
-                          [{"role":"system","content":"Responda estritamente em JSON."},{"role":"user","content":prompt}],
-                          content, usage)
+        _add_usage_or_estimate(tracker, "analise",
+                               [{"role":"system","content":"Responda estritamente em JSON."},{"role":"user","content":prompt}],
+                               content, usage)
         try:
             return json.loads(content), content
         except Exception:
-            # Auto-fix
             fix, usage2 = _chat_completion_json(provider, client, model_id.strip(),
-                                [{"role":"system","content":"Retorne apenas o JSON válido."},
-                                 {"role":"user","content":f"Converta para JSON válido:\n{content}"}], True)
-            _estimate_and_add(tracker, "analise",
-                              [{"role":"system","content":"Retorne apenas o JSON válido."},{"role":"user","content":f"Converta para JSON válido:\n{content}"}],
-                              fix, usage2)
+                                        [{"role":"system","content":"Retorne apenas o JSON válido."},
+                                         {"role":"user","content":f"Converta em JSON:\n{content}"}],
+                                        True)
+            _add_usage_or_estimate(tracker, "analise",
+                                   [{"role":"system","content":"Retorne apenas o JSON válido."},{"role":"user","content":f"Converta em JSON:\n{content}"}],
+                                   fix, usage2)
             return json.loads(fix), fix
     except Exception as e:
         return None, f"[Erro durante análise] {e}"
@@ -408,7 +413,6 @@ def chat_with_elder_brain(question, bfa_data, analysis, cargo, provider, model_i
         client = get_llm_client_cached(provider, token)
     except Exception as e:
         return f"Erro ao conectar com a IA: {e}"
-
     contexto = f"""
 Você é um consultor executivo de RH analisando um relatório BFA.
 
@@ -419,11 +423,10 @@ CARGO: {cargo}
 PERGUNTA: {question}
 Responda de forma objetiva e profissional.
 """.strip()
-
     try:
         content, usage = _chat_completion_json(provider, client, model_id.strip(),
                                                [{"role":"user","content":contexto}], False)
-        _estimate_and_add(tracker, "chat", [{"role":"user","content":contexto}], content, usage)
+        _add_usage_or_estimate(tracker, "chat", [{"role":"user","content":contexto}], content, usage)
         return content
     except Exception as e:
         msg = f"Erro na resposta da IA: {e}"
@@ -431,9 +434,12 @@ Responda de forma objetiva e profissional.
             msg += f" - Detalhes: {e.response.text}"
         return msg
 
-# ======== Gráficos ========
-COLOR_CANDIDATO = "#60519b"
-COLOR_IDEAL_MAX = "rgba(46, 213, 115, 0.35)"
+# =========================
+#       Gráficos (Plotly)
+# =========================
+# Paleta para gráficos PDF/UI
+COLOR_CANDIDATO = "#60519b"   # roxo (linha/principal)
+COLOR_IDEAL_MAX = "rgba(46, 213, 115, 0.35)"  # verde translúcido
 COLOR_IDEAL_MIN = "rgba(46, 213, 115, 0.15)"
 COLOR_WARN      = "#F39C12"
 COLOR_GOOD      = "#2ECC71"
@@ -447,10 +453,7 @@ def criar_radar_bfa(traits: Dict[str, Optional[float]], traits_ideais: Dict = No
         if v is None:
             norm = k.replace("ã","a").replace("ç","c").replace("õ","o").replace("é","e").replace("ó","o")
             v = traits.get(norm, 0)
-        try:
-            vals.append(float(v or 0))
-        except:
-            vals.append(0.0)
+        vals.append(float(v or 0))
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(r=vals, theta=labels, fill='toself', name='Candidato',
                                   line=dict(color=COLOR_CANDIDATO)))
@@ -507,7 +510,9 @@ def criar_gauge_fit(fit_score: float) -> go.Figure:
     fig.update_layout(height=400)
     return fig
 
-# ======== PDF Deluxe ========
+# =========================
+#        PDF (colorido)
+# =========================
 class PDFReport(FPDF):
     def __init__(self,*a,**k):
         super().__init__(*a,**k)
@@ -529,7 +534,7 @@ class PDFReport(FPDF):
         self.set_font(self._family,'B',22); self.ln(18); self.cell(0,12,self._safe(titulo),align='C',ln=1)
         self.set_font(self._family,'',12); self.cell(0,8,self._safe(subtitulo),align='C',ln=1); self.ln(6)
         self.set_font(self._family,'',11)
-        self.multi_cell(0,7,self._safe(f"Desenvolvedor Responsável: {autor}\nVersão: {versao}\nData: {datetime.now():%d/%m/%Y}"), align='C'); self.ln(4)
+        self.multi_cell(0,7,self._safe(f"Desenvolvedor Responsável: {autor}\nVersão: {versao}\nData: {datetime.now().strftime('%d/%m/%Y')}"), align='C'); self.ln(4)
     def header(self):
         if self.page_no()==1: return
         self.set_font(self._family,'B',12); self.cell(0,8,self._safe('Elder Brain Analytics — Relatório Corporativo'), align='C', ln=1); self.ln(1)
@@ -537,13 +542,24 @@ class PDFReport(FPDF):
         if self.page_no()==1: return
         self.set_y(-15); self.set_font(self._family,'',8); self.cell(0,10,self._safe(f'Página {self.page_no()}'), align='C')
     def heading(self, title):
+        # header colorido com a paleta
         self.set_font(self._family,'B',12)
-        self.set_fill_color(96, 81, 155)
+        self.set_fill_color(96, 81, 155)  # #60519b
         self.set_text_color(255,255,255)
         self.cell(0,10,self._safe(title),align='L',ln=1,fill=True)
-        self.set_text_color(0,0,0); self.ln(1)
+        self.set_text_color(0,0,0)
+        self.ln(1)
     def paragraph(self, body, size=10):
         self.set_font(self._family,'',size); self.multi_cell(0,5,self._safe(body or "")); self.ln(1)
+
+def fig_to_png_path(fig: "go.Figure", width=1280, height=800, scale=2) -> Optional[str]:
+    try:
+        import plotly.io as pio
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            pio.write_image(fig, tmp.name, format="png", width=width, height=height, scale=scale)
+            return tmp.name
+    except Exception:
+        return None
 
 def gerar_pdf_corporativo(bfa_data: Dict, analysis: Dict, cargo: str, save_path: str = None, logo_path: Optional[str] = None) -> io.BytesIO:
     try:
@@ -554,14 +570,14 @@ def gerar_pdf_corporativo(bfa_data: Dict, analysis: Dict, cargo: str, save_path:
         # CAPA
         pdf.cover("Elder Brain Analytics PRO — Versão Deluxe",
                   "Relatório de Análise Comportamental (BFA) com IA",
-                  "André de Lima","V9.1 CORPORATE",logo_path)
+                  "André de Lima","V9.1 Teste",logo_path)
 
         # 1. INFOS
         pdf.heading('1. INFORMAÇÕES DO CANDIDATO')
         candidato = bfa_data.get('candidato', {}) or {}
         info_text = f"""Nome: {candidato.get('nome', 'Não informado')}
 Cargo Avaliado: {cargo}
-Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
+Data da Análise: {datetime.now().strftime('%d/%m/%Y %H:%M')}"""
         pdf.paragraph(info_text, size=10)
 
         # 2. DECISÃO
@@ -592,7 +608,7 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
         for trait, analise in analise_tracos.items():
             if analise: pdf.paragraph(f'{trait}: {analise}', size=9)
 
-        # 5. VISUALIZAÇÕES
+        # 5. GRÁFICOS (COLORIDOS)
         pdf.add_page()
         pdf.heading('5. VISUALIZAÇÕES (GRÁFICOS)')
         perfil = gerar_perfil_cargo_dinamico(cargo)
@@ -600,6 +616,7 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
         comp_fig = criar_grafico_competencias((bfa_data or {}).get('competencias_ms', []) or [])
         gauge_fig = criar_gauge_fit(float((analysis or {}).get('compatibilidade_geral', 0) or 0))
 
+        missing = False
         def _embed(fig, w):
             path = fig_to_png_path(fig, width=1200, height=900, scale=2)
             if path:
@@ -607,18 +624,19 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
                 except Exception: pass
                 try: os.remove(path)
                 except Exception: pass
-                return True
-            return False
+            else:
+                return False
+            return True
 
         if not _embed(radar_fig, 180):
-            pdf.paragraph("⚠️ Instale 'kaleido' para embutir gráficos no PDF.", size=9)
+            missing = True; pdf.paragraph("⚠️ Instale 'kaleido' para embutir gráficos no PDF.", size=9)
         if comp_fig:
             if not _embed(comp_fig, 180):
-                pdf.paragraph("⚠️ Falha ao embutir gráfico de Competências.", size=9)
+                missing = True; pdf.paragraph("⚠️ Falha ao embutir gráfico de Competências.", size=9)
         else:
             pdf.paragraph("Sem competências para exibir.", size=9)
         if not _embed(gauge_fig, 150):
-            pdf.paragraph("⚠️ Falha ao embutir gráfico de Fit.", size=9)
+            missing = True; pdf.paragraph("⚠️ Falha ao embutir gráfico de Fit.", size=9)
 
         # 6. SAÚDE
         pdf.heading('6. SAÚDE EMOCIONAL E RESILIÊNCIA')
@@ -643,7 +661,7 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
             for item in pa:
                 if item: pdf.paragraph(f'! {item}', size=10)
 
-        # 9/10. RECOMENDAÇÕES / CARGOS
+        # 9. RECOMENDAÇÕES / CARGOS
         pdf.add_page()
         pdf.heading('9. RECOMENDAÇÕES DE DESENVOLVIMENTO')
         recs = (analysis or {}).get('recomendacoes_desenvolvimento', []) or []
@@ -669,7 +687,7 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
         except Exception:
             fb = PDFReport(); fb.set_main_family("Helvetica", False); fb.add_page()
             fb.set_font(fb._family,'B',14); fb.cell(0,10,fb._safe('RELATÓRIO DE ANÁLISE COMPORTAMENTAL'), ln=1, align='C')
-            fb.set_font(fb._family,'',11); fb.multi_cell(0,8,fb._safe(f"Relatório gerado para: {cargo}\nData: {datetime.now():%d/%m/%Y %H:%M}"))
+            fb.set_font(fb._family,'',11); fb.multi_cell(0,8,fb._safe(f"Relatório gerado para: {cargo}\nData: {datetime.now().strftime('%d/%m/%Y %H:%M')}"))
             out_bytes = fb.output(dest='S')
             if isinstance(out_bytes,str): out_bytes = out_bytes.encode('latin-1','replace')
 
@@ -679,12 +697,16 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
                 with open(save_path,'wb') as f: f.write(buf.getbuffer())
             except Exception as e:
                 st.error(f"Erro ao salvar PDF: {e}")
+        if missing:
+            st.warning("Para gráficos embutidos no PDF, instale: pip install -U kaleido")
         return buf
     except Exception as e:
         st.error(f"Erro crítico na geração do PDF: {e}")
         return io.BytesIO(b'%PDF-1.4\n%EOF\n')
 
-# ======== UI helpers ========
+# =========================
+#             UI
+# =========================
 def kpi_card(title, value, sub=None):
     st.markdown(
         f'<div class="kpi-card"><div style="font-weight:700;font-size:1.02rem">{title}</div>'
@@ -692,11 +714,11 @@ def kpi_card(title, value, sub=None):
         f'<div class="small">{sub or ""}</div></div>', unsafe_allow_html=True
     )
 
-# ======== APP ========
 def main():
-    st.set_page_config(page_title="EBA — Corporate PROD (Full)", page_icon="🧠", layout="wide")
+    st.set_page_config(page_title="EBA", page_icon="🧠", layout="wide")
     st.markdown(DARK_CSS, unsafe_allow_html=True)
 
+    # Session
     ss = st.session_state
     ss.setdefault('provider', "Groq")
     ss.setdefault('modelo', "llama-3.1-8b-instant")
@@ -706,68 +728,43 @@ def main():
     ss.setdefault('analysis', None)
     ss.setdefault('pdf_generated', None)
     ss.setdefault('tracker', TokenTracker())
-    ss.setdefault('admin_mode', False)   # sempre inicia como usuário comum
 
-    # ===== Topo
-    st.markdown("## 🧠 Elder Brain Analytics — Corporate (PROD • Full)")
-    st.markdown('<span class="badge">PDF Deluxe</span> <span class="badge">Seguro</span> <span class="badge">Streamlit Cloud</span>', unsafe_allow_html=True)
+    # Header simples
+    st.markdown("## 🧠 Elder Brain Analytics — Teste")
+    st.markdown('<span class="badge">Dark</span> <span class="badge">PDF Deluxe</span> <span class="badge">Token Logger</span>', unsafe_allow_html=True)
 
-    # ===== Sidebar (Config + Admin)
+    # KPIs
+    c1,c2,c3,c4 = st.columns(4)
+    with c1: kpi_card("Status", "Pronto", "Aguardando PDF")
+    with c2: kpi_card("Tokens (Total)", f"{ss['tracker'].total_tokens}", "desde o início")
+    with c3: kpi_card("Prompt/Output", f"{ss['tracker'].total_prompt}/{ss['tracker'].total_completion}", "tokens")
+    with c4: kpi_card("Custo Estimado", f"${ss['tracker'].cost_usd_gpt():.4f}", "pricing GPT-4o")
+
+    # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuração")
         provider = st.radio("Provedor", ["Groq","OpenAI"], index=0, key="provider")
         modelo = st.text_input("Modelo", value=ss['modelo'],
                                help=("Sugestões: " + ", ".join(MODELOS_SUGERIDOS_GROQ if provider=="Groq" else MODELOS_SUGERIDOS_OPENAI)))
         ss['modelo'] = modelo
-
-        # 🔐 SEM CAMPO DE API KEY PARA O USUÁRIO — usa st.secrets
-        token = st.secrets.get("GROQ_API_KEY","") if provider=="Groq" else st.secrets.get("OPENAI_API_KEY","")
-
-        st.caption("Temperatura fixa: 0.3 · Máx tokens: 4096")
+        token = st.text_input("API Key", type="password")
+        st.caption("Temperatura fixada internamente em 0.3 · Máximo de tokens fixo em 4096.")
+        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
         ss['cargo'] = st.text_input("Cargo para análise", value=ss['cargo'])
         if ss['cargo']:
             with st.expander("Perfil gerado (dinâmico)"):
                 st.json(gerar_perfil_cargo_dinamico(ss['cargo']))
 
-        st.markdown("---")
-        st.subheader("🔒 Painel Administrativo")
-        admin_pwd = st.text_input("Senha do Admin", type="password", placeholder="somente administradores")
-        if admin_pwd:
-            if admin_pwd == st.secrets.get("ADMIN_PASSWORD",""):
-                ss['admin_mode'] = True
-                st.success("Acesso administrativo concedido")
-            else:
-                ss['admin_mode'] = False
-                st.error("Senha incorreta")
-        else:
-            ss['admin_mode'] = False
+        st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+        st.header("📈 Token Log")
+        td = ss['tracker'].dict()
+        for step in ["extracao","analise","chat","pdf"]:
+            d = td.get(step, {"prompt":0,"completion":0,"total":0})
+            st.write(f"- **{step.capitalize()}**: {d['total']}  (prompt {d['prompt']} / output {d['completion']})")
+        st.write(f"**Total:** {ss['tracker'].total_tokens} tokens")
+        st.write(f"**Custo (GPT pricing):** ${ss['tracker'].cost_usd_gpt():.4f}")
 
-        # 📈 Token Log — SOMENTE admin
-        if ss['admin_mode']:
-            st.markdown("---")
-            st.header("📈 Token Log")
-            td = ss['tracker'].dict()
-            for step in ["extracao","analise","chat","pdf"]:
-                d = td.get(step, {"prompt":0,"completion":0,"total":0})
-                st.write(f"- **{step.capitalize()}**: {d['total']}  (prompt {d['prompt']} / output {d['completion']})")
-            st.write(f"**Total:** {ss['tracker'].total_tokens} tokens")
-            st.write(f"**Custo (estimado):** ${ss['tracker'].cost_usd_gpt():.4f}")
-        else:
-            st.caption("modo usuário — sem métricas financeiras visíveis")
-
-    # ===== KPIs (cliente NUNCA vê custo/tokens)
-    c1,c2,c3,c4 = st.columns(4)
-    with c1: kpi_card("Status", "Pronto", "Aguardando PDF")
-    if ss['admin_mode']:
-        with c2: kpi_card("Tokens (Total)", f"{ss['tracker'].total_tokens}", "desde o início")
-        with c3: kpi_card("Prompt/Output", f"{ss['tracker'].total_prompt}/{ss['tracker'].total_completion}", "tokens")
-        with c4: kpi_card("Custo Estimado", f"${ss['tracker'].cost_usd_gpt():.4f}", "apenas admin")
-    else:
-        with c2: kpi_card("Relatórios", "—", "em sessão")
-        with c3: kpi_card("Andamento", "—", "")
-        with c4: kpi_card("Disponibilidade", "Online", "")
-
-    # ===== Upload & Treinamento
+    # Upload
     st.markdown("### 📄 Upload do Relatório BFA")
     uploaded_file = st.file_uploader("Carregue o PDF do relatório BFA", type=["pdf"])
 
@@ -780,19 +777,16 @@ def main():
                     out.write(f.getbuffer())
             st.success(f"{len(training_files)} arquivo(s) salvos")
 
-    # ===== Processamento
     if uploaded_file:
         if not ss['cargo']: st.error("Informe o cargo na sidebar"); st.stop()
-        if not token:
-            st.error("Chave da API não configurada nos Secrets do Streamlit. Defina GROQ_API_KEY/OPENAI_API_KEY.")
-            st.stop()
+        if not token: st.error("Informe a API Key na sidebar"); st.stop()
         if not (ss['modelo'] and ss['modelo'].strip()): st.error("Informe o modelo"); st.stop()
 
         with st.spinner("Extraindo texto do PDF..."):
             raw_text = extract_pdf_text_bytes(uploaded_file)
         if raw_text.startswith("[ERRO"): st.error(raw_text); st.stop()
         st.success("✓ Texto extraído")
-        st.text_area("Prévia do texto (início)", raw_text[:1500], height=180)
+        st.text_area("Preview do texto (início)", raw_text[:1500], height=180)
 
         if st.button("🔬 ANALISAR RELATÓRIO", type="primary", use_container_width=True):
             training_context = load_all_training_texts()
@@ -802,24 +796,18 @@ def main():
             with st.spinner("Etapa 1/2: Extraindo dados estruturados..."):
                 bfa_data, raw1 = extract_bfa_data(raw_text, ss['cargo'], training_context, ss['provider'], ss['modelo'], token, tracker)
             if not bfa_data:
-                st.error("Falha na extração"); 
-                with st.expander("Resposta bruta da IA"):
-                    st.code(raw1)
-                st.stop()
+                st.error("Falha na extração"); st.code(raw1); st.stop()
 
             perfil = gerar_perfil_cargo_dinamico(ss['cargo'])
             with st.spinner("Etapa 2/2: Analisando compatibilidade..."):
                 analysis, raw2 = analyze_bfa_data(bfa_data, ss['cargo'], perfil, ss['provider'], ss['modelo'], token, tracker)
             if not analysis:
-                st.error("Falha na análise");
-                with st.expander("Resposta bruta da IA"):
-                    st.code(raw2)
-                st.stop()
+                st.error("Falha na análise"); st.code(raw2); st.stop()
 
             ss['bfa_data'], ss['analysis'], ss['analysis_complete'] = bfa_data, analysis, True
             st.success("✓ Análise concluída!"); st.rerun()
 
-    # ===== Resultados
+    # Resultados
     if ss.get('analysis_complete') and ss.get('bfa_data') and ss.get('analysis'):
         st.markdown("## 📊 Resultados")
         decisao = ss['analysis'].get('decisao','N/A')
@@ -839,74 +827,29 @@ def main():
             traits = ss['bfa_data'].get('traits_bfa',{})
             fig_radar = criar_radar_bfa(traits, gerar_perfil_cargo_dinamico(ss['cargo']).get('traits_ideais',{}))
             st.plotly_chart(fig_radar, use_container_width=True)
-            # tabela
-            traits_ideais = gerar_perfil_cargo_dinamico(ss['cargo']).get('traits_ideais',{})
-            df_traits = pd.DataFrame([
-                {'Traço': k, 'Valor': f"{(traits.get(k) if traits.get(k) is not None else 0):.1f}/10" if traits.get(k) is not None else "N/A",
-                 'Faixa Ideal': f"{traits_ideais.get(k,(0,10))[0]:.0f}-{traits_ideais.get(k,(0,10))[1]:.0f}"}
-                for k in ["Abertura","Conscienciosidade","Extroversão","Amabilidade","Neuroticismo"]
-            ])
-            st.dataframe(df_traits, use_container_width=True, hide_index=True)
-            # análise por traço
-            st.markdown("##### Análise Detalhada")
-            for trait, txt in (ss['analysis'].get('analise_tracos',{}) or {}).items():
-                with st.expander(f"**{trait}**"):
-                    st.write(txt)
-
         with tab2:
             comps = ss['bfa_data'].get('competencias_ms',[])
             figc = criar_grafico_competencias(comps)
             if figc: st.plotly_chart(figc, use_container_width=True)
-            st.markdown("##### Competências Críticas")
             for comp in ss['analysis'].get('competencias_criticas',[]):
                 status = comp.get('status'); compn = comp.get('competencia'); txt = comp.get('avaliacao','')
                 if status == 'ATENDE': st.success(f"✓ {compn} — {status}"); st.caption(txt)
                 elif status == 'PARCIAL': st.warning(f"⚠ {compn} — {status}"); st.caption(txt)
                 else: st.error(f"✗ {compn} — {status}"); st.caption(txt)
-            if comps:
-                with st.expander("Ver todas as competências"):
-                    df_comp = pd.DataFrame(comps).sort_values('nota', ascending=False)
-                    st.dataframe(df_comp, use_container_width=True, hide_index=True)
-            else:
-                st.warning("Nenhuma competência extraída.")
-
         with tab3:
-            st.subheader("Saúde Emocional e Resiliência")
             st.write(ss['analysis'].get('saude_emocional_contexto',''))
             indicadores = ss['bfa_data'].get('indicadores_saude_emocional',{})
-            if any(v is not None for v in indicadores.values()):
-                st.markdown("##### Indicadores (0-100, menor melhor)")
-                cols = st.columns(2)
-                for i,(k,v) in enumerate(indicadores.items()):
-                    if v is None: continue
-                    with cols[i%2]: st.metric(k.replace('_',' ').title(), f"{float(v):.0f}")
-            facetas = ss['bfa_data'].get('facetas_relevantes', [])
-            if facetas:
-                with st.expander("Facetas detalhadas"):
-                    for f in facetas:
-                        st.markdown(f"**{f.get('nome','')}** (Percentil: {f.get('percentil',0):.0f})")
-                        st.caption(f.get('interpretacao','')); st.markdown("---")
-
+            cols = st.columns(2)
+            for i,(k,v) in enumerate(indicadores.items()):
+                if v is None: continue
+                with cols[i%2]: st.metric(k.replace('_',' ').title(), f"{float(v):.0f}")
         with tab4:
-            st.subheader("Plano de Desenvolvimento")
             recs = ss['analysis'].get('recomendacoes_desenvolvimento',[])
-            if recs:
-                for i,r in enumerate(recs,1): st.markdown(f"**{i}.** {r}")
-            pf = ss['bfa_data'].get('pontos_fortes',[])
-            if pf:
-                st.markdown("##### ✅ Pontos Fortes")
-                for x in pf: st.success(f"• {x}")
-            pa = ss['bfa_data'].get('pontos_atencao',[])
-            if pa:
-                st.markdown("##### ⚠️ Pontos de Atenção")
-                for x in pa: st.warning(f"• {x}")
+            for i,r in enumerate(recs,1): st.markdown(f"**{i}.** {r}")
             alt = ss['analysis'].get('cargos_alternativos',[])
             if alt:
-                st.markdown("##### 🔄 Cargos Alternativos")
-                for c in alt:
-                    with st.expander(f"**{c.get('cargo','')}**"):
-                        st.write(c.get('justificativa',''))
-
+                st.markdown("#### Cargos Alternativos")
+                for c in alt: st.markdown(f"- **{c.get('cargo','')}** — {c.get('justificativa','')}")
         with tab5:
             c1,c2 = st.columns(2)
             with c1: st.json(ss['bfa_data'])
@@ -924,6 +867,7 @@ def main():
             fname = f"relatorio_{nome}_{ts}.pdf"
             path = os.path.join(PROCESSED_DIR, fname)
             buf = gerar_pdf_corporativo(ss['bfa_data'], ss['analysis'], ss['cargo'], save_path=path, logo_path=logo_path if logo_path else None)
+            # registra passo lógico de PDF (sem custo)
             ss['tracker'].add("pdf", 0, 0)
             if buf.getbuffer().nbytes > 100:
                 ss['pdf_generated'] = {'buffer': buf, 'filename': fname}
