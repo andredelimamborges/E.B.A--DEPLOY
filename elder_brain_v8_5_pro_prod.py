@@ -554,7 +554,7 @@ def gerar_pdf_corporativo(bfa_data: Dict, analysis: Dict, cargo: str, save_path:
         # CAPA
         pdf.cover("Elder Brain Analytics PRO — Versão Deluxe",
                   "Relatório de Análise Comportamental (BFA) com IA",
-                  "André de Lima","V9.1 CORPORATE",logo_path)
+                  "André de Lima","V9.1 Deploy",logo_path)
 
         # 1. INFOS
         pdf.heading('1. INFORMAÇÕES DO CANDIDATO')
@@ -661,7 +661,7 @@ Data da Análise: {datetime.now():%d/%m/%Y %H:%M}"""
                 if just: pdf.set_font(pdf._family,'',9); pdf.multi_cell(0,5,pdf._safe(f"   {just}"))
 
         pdf.ln(2); pdf.set_font(pdf._family,'I',8)
-        pdf.multi_cell(0,4,pdf._safe("Este relatório auxilia a decisão e não substitui avaliação profissional. Uso interno — Elder Brain Analytics PRO (Versão Deluxe)."))
+        pdf.multi_cell(0,4,pdf._safe("Este relatório auxilia a decisão e não substitui avaliação profissional. Uso interno e Sigiloso— Elder Brain Analytics (E.B.A)."))
 
         try:
             out_bytes = pdf.output(dest='S')
@@ -694,7 +694,7 @@ def kpi_card(title, value, sub=None):
 
 # ======== APP ========
 def main():
-    st.set_page_config(page_title="EBA — Corporate PROD (Full)", page_icon="🧠", layout="wide")
+    st.set_page_config(page_title="EBA — Versão de Testes", page_icon="🧠", layout="wide")
     st.markdown(DARK_CSS, unsafe_allow_html=True)
 
     ss = st.session_state
@@ -709,7 +709,7 @@ def main():
     ss.setdefault('admin_mode', False)   # sempre inicia como usuário comum
 
     # ===== Topo
-    st.markdown("## 🧠 Elder Brain Analytics — Corporate (PROD • Full)")
+    st.markdown("## 🧠 Elder Brain Analytics — Versão Testes (9.1)")
     st.markdown('<span class="badge">PDF Deluxe</span> <span class="badge">Seguro</span> <span class="badge">Streamlit Cloud</span>', unsafe_allow_html=True)
 
     # ===== Sidebar (Config + Admin)
