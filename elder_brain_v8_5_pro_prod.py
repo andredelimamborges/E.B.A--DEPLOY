@@ -730,7 +730,7 @@ def main():
     ss.setdefault('tracker', TokenTracker())
 
     # Header simples
-    st.markdown("## 🧠 Elder Brain Analytics — Corporate")
+    st.markdown("## 🧠 Elder Brain Analytics — Teste")
     st.markdown('<span class="badge">Dark</span> <span class="badge">PDF Deluxe</span> <span class="badge">Token Logger</span>', unsafe_allow_html=True)
 
     # KPIs
