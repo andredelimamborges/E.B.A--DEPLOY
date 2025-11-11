@@ -156,7 +156,7 @@ def kpi_card(title,value,sub=None):
 def main():
     st.set_page_config(page_title="EBA — PROD",page_icon="🧠",layout="wide")
     st.markdown(DARK_CSS,unsafe_allow_html=True)
-    st.title("🧠 Elder Brain Analytics — Versão PROD")
+    st.title("🧠 Elder Brain Analytics — Versão Testes")
     ss=st.session_state
     ss.setdefault("tracker",TokenTracker())
 
@@ -174,7 +174,7 @@ def main():
         else:ss["admin_mode"]=False
 
     # --- Upload PDF ---
-    st.subheader("📄 Upload de Relatório BFA")
+    st.subheader("📄 Upload de Relatório BFA/BOL")
     up=st.file_uploader("Carregue o PDF do relatório",type=["pdf"])
     if up and cargo:
         with st.spinner("Extraindo texto..."):
